@@ -1,11 +1,8 @@
 import os
-import json
-import time
-import threading
-import websocket
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import time
 
 # =========================
 # CONFIG
@@ -14,78 +11,57 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN environment variable not set!")
 
-# Example WebSocket: Binance BTC/USDT trade stream
-WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@trade"
-
-latest_price = None  # Shared variable for WebSocket updates
+# Optional: caching last price to avoid too many API requests
+latest_price = None
+last_update_time = 0
+UPDATE_INTERVAL = 10  # seconds between API calls
 
 # =========================
-# WEBSOCKET HANDLER
+# FETCH BTC PRICE FUNCTION
 # =========================
-def on_ws_message(ws, message):
-    global latest_price
-    try:
-        data = json.loads(message)
-        latest_price = float(data.get("p", 0))
-    except Exception as e:
-        print("Error parsing WS message:", e)
-
-def on_ws_open(ws):
-    print("✅ WebSocket connected")
-
-def on_ws_error(ws, error):
-    print("❌ WebSocket error:", error)
-
-def on_ws_close(ws, close_status_code, close_msg):
-    print(f"⚠️ WebSocket closed: {close_status_code} - {close_msg}")
-
-def start_websocket():
-    while True:
+def fetch_btc_price():
+    global latest_price, last_update_time
+    current_time = time.time()
+    if current_time - last_update_time > UPDATE_INTERVAL:
         try:
-            ws = websocket.WebSocketApp(
-                WS_URL,
-                on_message=on_ws_message,
-                on_open=on_ws_open,
-                on_error=on_ws_error,
-                on_close=on_ws_close,
+            response = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
             )
-            ws.run_forever()
+            data = response.json()
+            latest_price = data["bitcoin"]["usd"]
+            last_update_time = current_time
         except Exception as e:
-            print("WebSocket crashed, reconnecting in 5s...", e)
-            time.sleep(5)
+            print("❌ Error fetching BTC price:", e)
+    return latest_price
 
 # =========================
 # TELEGRAM COMMANDS
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👁️ DegenEye is online.\nUse /price to get live BTC price."
+        "👁️ DegenEye is online.\nUse /price to get the latest BTC price."
     )
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if latest_price:
-        await update.message.reply_text(f"📈 BTC/USDT (live): ${latest_price}")
+    price = fetch_btc_price()
+    if price:
+        await update.message.reply_text(f"📈 BTC/USD: ${price}")
     else:
-        await update.message.reply_text("⏳ Price not available yet, try again.")
+        await update.message.reply_text("⏳ Unable to fetch price. Try again in a few seconds.")
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🏓 Pong! Bot is alive.")
 
 # =========================
-# MAIN
+# MAIN FUNCTION
 # =========================
 def main():
-    # Start WebSocket in a background daemon thread
-    ws_thread = threading.Thread(target=start_websocket, daemon=True)
-    ws_thread.start()
-
-    # Build Telegram bot
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("ping", ping))
 
-    print("🤖 DegenEye bot running...")
+    print("🤖 DegenEye bot running with CoinGecko REST polling...")
     app.run_polling()
 
 if __name__ == "__main__":
